@@ -1,4 +1,4 @@
-#AutoHotkey Automation Suite
+##AutoHotkey Automation Suite
 
 Welcome to my repository of custom Windows automation scripts. These tools are designed to bridge functional gaps in the Windows interface, providing lightweight, native-feeling enhancements for task management and system monitoring.
 
