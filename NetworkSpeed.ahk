@@ -1,23 +1,27 @@
-﻿#Persistent
+#Persistent
 #NoEnv
 SetBatchLines, -1
 
 ; --- CONFIGURATION ---
 FontName := "Segoe UI Variable Text"
-FontSize := 10        ; Increased font size
-TextColor := "000000" ; Solid Black text
-IdleColor := "777777" ; Grey arrow when no traffic
-UpColor   := "0055FF" ; Blue arrow for active Upload
-DownColor := "00AA00" ; Green arrow for active Download
+FontSize := 10
+TextColor := "000000"
+DownColor := "00AA00" ; Green
+RedColor  := "FF0000" ; Red
 RefreshRate := 1000
 
-;; --- UI CREATION ---
+; --- OS DETECTION AND SETUP ---
+if (A_OSVersion >= "10.0.22000") { ; Windows 11 build number check
+    TargetMode := "Win11"
+} else {
+    TargetMode := "Win10"
+}
+
 Gui, +LastFound +AlwaysOnTop -Caption +ToolWindow +E0x20
 Gui, Color, 111111
 WinSet, TransColor, 111111
 
-; Separate the Arrows from the Text
-Gui, Font, s%FontSize% c%IdleColor% w700, %FontName%
+Gui, Font, s%FontSize% c%RedColor% w700, %FontName%
 Gui, Add, Text, vArrowUp w15 X0 Y0, ↑
 Gui, Add, Text, vArrowDown w15 X0 Y18, ↓
 
@@ -25,81 +29,65 @@ Gui, Font, s%FontSize% c%TextColor% w600, %FontName%
 Gui, Add, Text, vTextUp w80 X15 Y0, 0.0 KB/s
 Gui, Add, Text, vTextDown w80 X15 Y18, 0.0 KB/s
 
-; --- TASKBAR INJECTION (Forced Bottom-Left) ---
-; Get the main Taskbar handle
-TaskbarID := WinExist("ahk_class Shell_TrayWnd")
+; --- DYNAMIC POSITIONING LOGIC ---
+if (TargetMode == "Win11") {
+    TaskbarID := WinExist("ahk_class Shell_TrayWnd")
+    Gui, +Parent%TaskbarID%
+    Gui, Show, x5 y12 w100 h40 NA, Win11NetMeter
+} else {
+    ; Windows 10: Find Tray area and position to the left of it
+    SetTimer, PositionWin10, 500
+}
 
-; Set the window style to be a 'Child' of the taskbar
-Gui, +Parent%TaskbarID% -Caption +ToolWindow +AlwaysOnTop
-
-; Increase 'y' to move the widget down. 'y10' or 'y12' usually centers it 
-; perfectly on a standard Windows 11 taskbar.
-Gui, Show, x5 y2 w100 h40 NA, Win11NetMeter
-
-; --- TASKBAR INJECTION (Prevents hiding on click) ---
-TaskbarID := WinExist("ahk_class Shell_TrayWnd")
-GuiID := WinExist() ; Gets the HWND of our GUI
-
-; Attach our widget natively into the Taskbar
-DllCall("SetParent", "ptr", GuiID, "ptr", TaskbarID)
-
-; Show the GUI. Because it is now inside the taskbar, x15 y5 means 
-; 15 pixels from the far-left edge of the taskbar itself.
-Gui, Show, x15 y5 w100 h40 NA, Win11NetMeter
-
-; Grab baseline network metrics and fire the timer loop
 GetNetworkBytes(OldIn, OldOut)
 SetTimer, UpdateSpeed, %RefreshRate%
 return
 
+; --- WINDOWS 10 TRAY DYNAMICS ---
+PositionWin10:
+ControlGetPos, TX, TY, TW, TH, TrayNotifyWnd1, ahk_class Shell_TrayWnd
+if (TX > 0) {
+    ; Anchor to the left of the System Tray
+    Gui, Show, % "x" (TX - 105) " y5 w100 h40 NA", Win10NetMeter
+}
+return
+
 ; --- UPDATED SPEED SAMPLING LOOP ---
 UpdateSpeed:
-GetNetworkBytes(NewIn, NewOut)
+; Get the current speed directly
+GetNetworkBytes(BytesIn, BytesOut)
 
-; Calculate changes using the correct pairs
-BytesIn := NewIn - OldIn
-BytesOut := NewOut - OldOut
+; 1. PRE-CALCULATE COLORS
+UpColor := (BytesOut > 1024) ? DownColor : RedColor
+DownColorVar := (BytesIn > 1024) ? DownColor : RedColor
 
-; Save current for next loop
-OldIn := NewIn
-OldOut := NewOut
-
-; --- DYNAMIC COLORS ---
-UpStatusColor := (BytesOut > 1024) ? DownColor : "FF0000"
-DownStatusColor := (BytesIn > 1024) ? DownColor : "FF0000"
-
-; 1. Update Arrow Up
-Gui, Font, s%FontSize% c%UpStatusColor% w700, %FontName%
+; 2. Update Arrow Up
+Gui, Font, s%FontSize% c%UpColor% w700, %FontName%
 GuiControl, Font, ArrowUp
 GuiControl,, TextUp, % FormatBytes(BytesOut)
 
-; 2. Update Arrow Down
-Gui, Font, s%FontSize% c%DownStatusColor% w700, %FontName%
+; 3. Update Arrow Down
+Gui, Font, s%FontSize% c%DownColorVar% w700, %FontName%
 GuiControl, Font, ArrowDown
 GuiControl,, TextDown, % FormatBytes(BytesIn)
 
-; 3. Reset Global Font to Black
+; 4. Reset Global Font to Black
 Gui, Font, s%FontSize% c%TextColor% w600, %FontName%
 return
 
-; --- SYSTEM WMI QUERY ---
-GetNetworkBytes(ByRef InBytes, ByRef OutBytes) {
-    static wmi := ""
-    if (!wmi)
-        wmi := ComObjGet("winmgmts:{impersonationLevel=impersonate}!\\.\root\cimv2")
+; --- UTILITIES ---
+GetNetworkBytes(ByRef InBytesPerSec, ByRef OutBytesPerSec) {
+    static wmi := ComObjGet("winmgmts:{impersonationLevel=impersonate}!\\.\root\cimv2")
+    InBytesPerSec := 0
+    OutBytesPerSec := 0
     
-    InBytes := 0, OutBytes := 0
-    for item in wmi.ExecQuery("Select BytesReceivedPerSec, BytesSentPerSec from Win32_PerfRawData_Tcpip_NetworkInterface") {
-        InBytes += item.BytesReceivedPerSec
-        OutBytes += item.BytesSentPerSec
+    ; Query the 'Formatted' data which gives us bytes/sec directly
+    for item in wmi.ExecQuery("Select BytesReceivedPerSec, BytesSentPerSec from Win32_PerfFormattedData_Tcpip_NetworkInterface") {
+        InBytesPerSec += item.BytesReceivedPerSec
+        OutBytesPerSec += item.BytesSentPerSec
     }
 }
 
 FormatBytes(bytes) {
-    if (bytes < 1024)
-        return bytes . " B/s"
-    else if (bytes < 1048576)
-        return Round(bytes / 1024, 1) . " KB/s"
-    else
-        return Round(bytes / 1048576, 1) . " MB/s"
+    return (bytes < 1024) ? bytes . " B/s" : (bytes < 1048576) ? Round(bytes / 1024, 1) . " KB/s" : Round(bytes / 1048576, 1) . " MB/s"
 }
